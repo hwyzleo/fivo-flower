@@ -39,6 +39,7 @@ final class AppEnvironment {
     let notifications: NotificationScheduling
     let ocr: OCRServicing
     let backup: BackupServicing
+    let cloudBackup: CloudBackupServicing
     let csv: CSVExporting
     let calendar: Calendar
     let isUITestMode: Bool
@@ -58,6 +59,7 @@ final class AppEnvironment {
         notifications: NotificationScheduling,
         ocr: OCRServicing,
         backup: BackupServicing,
+        cloudBackup: CloudBackupServicing,
         csv: CSVExporting,
         calendar: Calendar,
         isUITestMode: Bool,
@@ -69,6 +71,7 @@ final class AppEnvironment {
         self.notifications = notifications
         self.ocr = ocr
         self.backup = backup
+        self.cloudBackup = cloudBackup
         self.csv = csv
         self.calendar = calendar
         self.isUITestMode = isUITestMode
@@ -132,13 +135,29 @@ final class AppEnvironment {
             try? dataStore.clearAllData()
         }
 
+        let backupService = FileBackupService(store: dataStore, imageStore: imageStore)
+        let cloudContainer: CloudContainerProviding
+        if isUITest {
+            // UI 测试用本地假容器：真实读写，但不触碰 iCloud。
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("FivoUITestCloud-\(UUID().uuidString)", isDirectory: true)
+            cloudContainer = LocalCloudContainer(directory: directory)
+        } else {
+            cloudContainer = UbiquitousCloudContainer()
+        }
+
         let environment = AppEnvironment(
             container: container,
             dataStore: dataStore,
             imageStore: imageStore,
             notifications: LocalNotificationService(),
             ocr: VisionOCRService(),
-            backup: FileBackupService(store: dataStore, imageStore: imageStore),
+            backup: backupService,
+            cloudBackup: CloudBackupService(
+                backup: backupService,
+                container: cloudContainer,
+                defaults: .standard
+            ),
             csv: FileCSVExporter(),
             calendar: FivoDate.defaultCalendar,
             isUITestMode: isUITest,
@@ -187,6 +206,14 @@ final class AppEnvironment {
     func reconcileNotifications() async {
         let all = (try? dataStore.reminders()) ?? []
         await notifications.reconcile(all)
+    }
+
+    /// 退到后台时尝试一次云端自动备份；失败静默，下次前台可手动重试。
+    func performAutoCloudBackupIfNeeded() {
+        guard !isUITestMode else { return }
+        guard cloudBackup.availability() == .ready else { return }
+        guard cloudBackup.shouldAutoBackup(now: Date()) else { return }
+        _ = try? cloudBackup.uploadBackup()
     }
 
     func requestNotificationAuthorizationIfNeeded() async -> Bool {

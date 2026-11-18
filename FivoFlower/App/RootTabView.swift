@@ -52,6 +52,9 @@ struct RootTabView: View {
             if newValue == .active {
                 Task { await env.reconcileNotifications() }
             }
+            if newValue == .background {
+                env.performAutoCloudBackupIfNeeded()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }

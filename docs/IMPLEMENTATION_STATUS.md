@@ -1,6 +1,6 @@
 # FIVO 的花花 — 实现状态
 
-- 更新日期：2026-11-16
+- 更新日期：2026-11-17
 - 对应版本：MVP v1.0 代码骨架与核心流程
 - 验证命令：`./scripts/ci.sh`（Debug 构建 + 单元/集成测试 + UI 测试）
 
@@ -15,14 +15,15 @@
 | M4 养护动作与周期 | 完成 | 内置/自定义养护类型与历史快照、单株/批量记录、照片/用量、当前养护状态与唯一添加/修改周期入口、每 N 天/周/月/年、仅完成后生成下一待办、修改周期自动调整、手动/批量养护自动完成对应待办、日历每日待办、本地通知与前台对账、低库存提醒与单个关闭、权限拒绝提示 | 完成提醒默认同时生成养护记录，未提供“只完成不记录”开关；类型排序未提供拖拽 UI |
 | M5 订单导入 | 基本完成 | PhotosPicker/相机、Vision OCR、本地订单解析、确认页与低置信度提示、重复提示、多截图、失败回退、可选采购账目 | 未提供“未完成导入记录”继续入口 |
 | M6 工具资材、账本与统计 | 基本完成 | 工具分类/档案/照片、消耗品库存与历史、低库存、设备手动状态、账目 CRUD、支出/收入/退款、来源关联、搜索/筛选、累计投入/分类汇总/月度趋势、价格同步确认、删除保留账目 | 账本分类排序、工具批量操作未实现；工具列表使用原图（未分离缩略图） |
-| M7 设置、备份与导出 | 完成 | 设置页、养护/生长类型管理、权限入口、版本化 `.fivoflower` 备份（ZIP/manifest/data/媒体）、校验+安全备份+整体替换、损坏包保护、植物/账本 CSV 导出与分享、清空数据、隐私说明 | 备份未包含未完成订单导入的临时附件（设计允许清除缓存） |
-| M8 集成、性能与 TestFlight | 部分完成 | 67 个单元/集成测试、13 个 UI 测试、空状态/错误文案、无障碍标签、减少动态效果阴影、浅色模式 | 大样本性能、VoiceOver 全路径、Dynamic Type 极限、真机矩阵、TestFlight 构建与隐私清单未执行 |
+| M7 设置、备份与导出 | 完成 | 设置页、养护/生长类型管理、权限入口、版本化 `.fivoflower` 备份（ZIP/manifest/data/媒体）、校验+安全备份+整体替换、损坏包保护、植物/账本 CSV 导出与分享、清空数据、隐私说明 | 备份未包含未完成订单导入的临时附件（设计允许清除缓存）；iCloud 云盘备份未实现（见 M9） |
+| M8 集成、性能与 TestFlight | 部分完成 | 81 个单元/集成测试、14 个 UI 测试、空状态/错误文案、无障碍标签、减少动态效果阴影、浅色模式 | 大样本性能、VoiceOver 全路径、Dynamic Type 极限、真机矩阵、TestFlight 构建与隐私清单未执行 |
+| M9 iCloud 云盘备份与恢复 | 完成 | `CloudBackupServicing` 与 `CloudBackupService`、iCloud Documents 容器与 Info.plist/entitlements、协调写入与占位下载、`fivoflower-<设备>-<时间>` 命名与保留清理、设置页云端卡片、后台 24h 自动备份、iCloud 不可用降级 | 未在真机 + 真实 iCloud 账号验收；「文件」App 可见性与跨设备互见需真机确认 |
 
 ## 2. 自动化测试
 
 ```bash
-./scripts/ci.sh unit   # 67 tests
-./scripts/ci.sh ui     # 13 tests（iOS 17.2 模拟器）
+./scripts/ci.sh unit   # 81 tests
+./scripts/ci.sh ui     # 14 tests（iOS 17.2 模拟器）
 ```
 
 覆盖重点：
@@ -145,3 +146,17 @@
 - 订单导入保留完整能力：多截图、Vision OCR、本地解析、字段确认、重复提示、手动回退，全部在设备端完成。
 - App 现状：无任何网络请求、无第三方 SDK、无服务端、无账号体系。
 - 测试：删除 1 个 AI 字段合并单元测试与 3 个 AI UI 测试及 `configureMockAI` 辅助方法；67 个单元/集成测试通过，UI 测试 13 个（`testPhotoGridShowsSquareThumbnails` 为 LazyVGrid 渲染计数的既有回归问题，与本次改动无关）。
+
+补丁 13（iCloud 云盘备份，2026-11-17）：
+- 需求：在现有本地 `.fivoflower` 备份之上，把同一份备份包写入用户本人 iCloud 云盘，支持历史版本回滚与跨设备搬数据；对应 SPEC 需求 FR-DATA-007~012、SPEC 设计 5.7、SPEC 开发计划 M9。
+- 触发：设置页手动「立即备份到 iCloud」+ 退到后台且距上次成功 >24h 自动一次；不做写操作级上传。
+- 命名与保留：`fivoflower-<设备名>-<yyyyMMdd-HHmm>.fivoflower`，每设备最近 7 份 + 每周最早 1 份 × 4；清理只作用于本设备命名的包。
+- 内容：与现有备份完全一致（原图、缩略图、封面、订单附件），`formatVersion` 不变；不做「仅数据轻包」。
+- 恢复：沿用「校验 → 摘要 → 安全备份 → 二次确认 → 整体替换」，不做跨备份合并。
+- 明确不做：实时多设备数据同步、CloudKit 数据库同步与字段级冲突合并（仍属首版后迭代）。
+- 实现方式：复用 `FileBackupService.createBackup()` 产物，经 `NSFileCoordinator`（`.forReplacing`）重命名移入容器，不改动备份格式与现有备份服务；`FileBackupService` 无需开放新的注入点。
+- 工程配置：新增 `Config/FivoFlower.entitlements`（iCloud Documents + `com.apple.developer.ubiquity-container-identifiers`）与 `Config/Info.plist`（`NSUbiquitousContainers`），工程设置补 `CODE_SIGN_ENTITLEMENTS` 与 `INFOPLIST_FILE`（保留 `GENERATE_INFOPLIST_FILE = YES` 合并 `INFOPLIST_KEY_*`）。
+- 代码：新增 `Domain/Protocols/CloudBackupServicing.swift`、`Services/CloudBackupService.swift`；`AppEnvironment` 注入 `cloudBackup`，`RootTabView` 在退到后台时触发 24h 自动备份；`BackupRestoreView` 新增云端备份卡片（可用性、自动备份开关、立即备份、云端列表、恢复与删除）；设置页隐私与备份文案同步修订。
+- 测试：新增 `FivoFlowerTests/CloudBackupTests.swift` 14 项（命名与上传、同分钟覆盖、列表过滤、保留策略、清理不越界、未登录/关闭云盘降级、下载中与文件缺失、云端恢复 round-trip、删除、24h 自动备份、设备名净化）；新增 UI 测试 `testCloudBackupFromSettingsCreatesPackage`。全量 81 个单元/集成测试与 14 个 UI 测试通过（1 项为既有 `testPhotoGridShowsSquareThumbnails` 回归）。
+- 修复：声明 iCloud 容器 entitlement 后，`ModelConfiguration` 的 `cloudKitDatabase` 默认 `.automatic` 会让 SwiftData 启用 CloudKit，与 `@Attribute(.unique)` 冲突导致启动崩溃（`无法创建数据容器：SwiftDataError 错误 1`）；已在 `PersistenceController.makeContainer` 显式传 `cloudKitDatabase: .none`，并在 SPEC 设计 4.9 记录该约束。
+- 遗留：模拟器与 `CODE_SIGNING_ALLOWED=NO` 下无法验证真实 iCloud 容器，需真机 + 同一 Apple ID 两台设备做「文件」App 可见性与跨设备互见验收。

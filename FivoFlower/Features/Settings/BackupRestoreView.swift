@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct BackupRestoreView: View {
@@ -8,6 +9,10 @@ struct BackupRestoreView: View {
     @State private var backups: [URL] = []
     @State private var lastCreated: URL?
     @State private var pendingRestore: PendingRestore?
+    @State private var cloudItems: [CloudBackupItem] = []
+    @State private var cloudAvailability: CloudBackupAvailability = .ready
+    @State private var pendingCloudDelete: CloudBackupItem?
+    @State private var isCloudWorking = false
     @State private var isWorking = false
     @State private var showImporter = false
     @State private var message: String?
@@ -45,6 +50,8 @@ struct BackupRestoreView: View {
                     }
                 }
                 .softCard()
+
+                cloudBackupSection
 
                 VStack(alignment: .leading, spacing: FivoSpacing.sm) {
                     Text("恢复备份")
@@ -112,14 +119,17 @@ struct BackupRestoreView: View {
         .navigationTitle("备份与恢复")
         .navigationBarTitleDisplayMode(.inline)
         .overlay {
-            if isWorking {
+            if isWorking || isCloudWorking {
                 Color.black.opacity(0.12).ignoresSafeArea()
                 ProgressView("处理中…")
                     .padding(FivoSpacing.lg)
                     .background(FivoColor.surfaceElevated, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
         }
-        .task { loadBackups() }
+        .task {
+            loadBackups()
+            loadCloudBackups()
+        }
         .fileImporter(
             isPresented: $showImporter,
             allowedContentTypes: [backupType, .zip],
@@ -153,6 +163,195 @@ struct BackupRestoreView: View {
                 Text(summaryText(pending.summary))
             }
         }
+        .confirmationDialog(
+            "删除这个云端备份？",
+            isPresented: Binding(
+                get: { pendingCloudDelete != nil },
+                set: { if !$0 { pendingCloudDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                if let item = pendingCloudDelete { deleteCloud(item) }
+                pendingCloudDelete = nil
+            }
+            Button("取消", role: .cancel) { pendingCloudDelete = nil }
+        } message: {
+            if let item = pendingCloudDelete {
+                Text("将从 iCloud 云盘删除 \(item.fileName)，本机数据不受影响。")
+            }
+        }
+    }
+
+    // MARK: - iCloud 云盘备份
+
+    @ViewBuilder
+    private var cloudBackupSection: some View {
+        VStack(alignment: .leading, spacing: FivoSpacing.sm) {
+            Text("iCloud 云盘备份")
+                .font(FivoFont.sectionTitle)
+                .foregroundStyle(FivoColor.textPrimary)
+            Text("把同一份 .fivoflower 备份包写入你的 iCloud 云盘，可在「文件」App 查看，支持历史版本回滚与换机搬数据。只写入你本人的 iCloud，不经过任何服务端。")
+                .font(FivoFont.caption)
+                .foregroundStyle(FivoColor.textSecondary)
+
+            if case .ready = cloudAvailability {
+                Toggle(isOn: Binding(
+                    get: { env.cloudBackup.isAutoBackupEnabled },
+                    set: { env.cloudBackup.isAutoBackupEnabled = $0 }
+                )) {
+                    Text("退到后台时自动备份（每 24 小时最多一次）")
+                        .font(FivoFont.caption)
+                        .foregroundStyle(FivoColor.textPrimary)
+                }
+                .tint(FivoColor.textPrimary)
+
+                GoldPrimaryButton(
+                    title: "立即备份到 iCloud",
+                    systemImage: "icloud.and.arrow.up",
+                    isLoading: isCloudWorking
+                ) {
+                    createCloudBackup()
+                }
+
+                if let last = env.cloudBackup.lastBackupDate() {
+                    Text("上次成功：\(FivoDate.dateTime(last))")
+                        .font(FivoFont.caption)
+                        .foregroundStyle(FivoColor.textSecondary)
+                } else {
+                    Text("尚未成功备份到 iCloud。")
+                        .font(FivoFont.caption)
+                        .foregroundStyle(FivoColor.textSecondary)
+                }
+            } else {
+                Label(cloudUnavailableText, systemImage: "exclamationmark.icloud")
+                    .font(FivoFont.caption)
+                    .foregroundStyle(FivoColor.danger)
+                SecondaryButton(title: "打开系统设置", systemImage: "gearshape") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            }
+
+            if cloudAvailability == .ready, !cloudItems.isEmpty {
+                Text("云端备份")
+                    .font(FivoFont.captionStrong)
+                    .foregroundStyle(FivoColor.textPrimary)
+                    .padding(.top, FivoSpacing.xs)
+                ForEach(cloudItems) { item in
+                    HStack(spacing: FivoSpacing.sm) {
+                        Button {
+                            inspectCloud(item)
+                        } label: {
+                            HStack(spacing: FivoSpacing.sm) {
+                                Image(systemName: item.isDownloaded ? "icloud" : "icloud.and.arrow.down")
+                                    .foregroundStyle(FivoColor.textPrimary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.fileName)
+                                        .font(FivoFont.captionStrong)
+                                        .foregroundStyle(FivoColor.textPrimary)
+                                        .lineLimit(1)
+                                    Text(cloudItemInfo(item))
+                                        .font(FivoFont.caption)
+                                        .foregroundStyle(FivoColor.textSecondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(FivoColor.textSecondary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            pendingCloudDelete = item
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(FivoColor.danger)
+                                .frame(width: 44, height: 44)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("删除云端备份")
+                    }
+                    .softCard(padding: FivoSpacing.sm)
+                }
+            }
+        }
+        .softCard()
+    }
+
+    private var cloudUnavailableText: String {
+        switch cloudAvailability {
+        case .ready: return ""
+        case .noAccount: return "未登录 iCloud，登录 Apple ID 后即可使用云端备份。本地备份不受影响。"
+        case .driveDisabled: return "iCloud 云盘未开启，开启后即可使用云端备份。本地备份不受影响。"
+        case .unavailable(let reason): return reason
+        }
+    }
+
+    private func cloudItemInfo(_ item: CloudBackupItem) -> String {
+        let date = FivoDate.dateTime(item.createdAt)
+        let device = item.deviceName
+        guard item.byteSize > 0 else { return "\(date) · \(device) · 待下载" }
+        let size = ByteCountFormatter.string(fromByteCount: item.byteSize, countStyle: .file)
+        return "\(date) · \(device) · \(size)"
+    }
+
+    private func loadCloudBackups() {
+        cloudAvailability = env.cloudBackup.availability()
+        guard cloudAvailability == .ready else {
+            cloudItems = []
+            return
+        }
+        do {
+            cloudItems = try env.cloudBackup.listBackups()
+        } catch {
+            cloudItems = []
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func createCloudBackup() {
+        isCloudWorking = true
+        errorMessage = nil
+        do {
+            let item = try env.cloudBackup.uploadBackup()
+            loadCloudBackups()
+            message = "已备份到 iCloud：\(item.fileName)"
+            isSuccess = true
+        } catch {
+            errorMessage = error.localizedDescription
+            isSuccess = false
+        }
+        isCloudWorking = false
+    }
+
+    private func inspectCloud(_ item: CloudBackupItem) {
+        isCloudWorking = true
+        errorMessage = nil
+        do {
+            let local = try env.cloudBackup.prepareForRestore(item)
+            let summary = try env.backup.inspectBackup(at: local)
+            pendingRestore = PendingRestore(url: local, summary: summary)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isCloudWorking = false
+    }
+
+    private func deleteCloud(_ item: CloudBackupItem) {
+        isCloudWorking = true
+        do {
+            try env.cloudBackup.deleteBackup(item)
+            loadCloudBackups()
+            message = "已删除云端备份：\(item.fileName)"
+            isSuccess = true
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isCloudWorking = false
     }
 
     private func createBackup() {

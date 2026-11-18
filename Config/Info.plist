@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  iCloud Documents 容器声明。
+	  与工程 Build Settings 中的 INFOPLIST_KEY_* 合并生成最终 Info.plist。
+	  NSUbiquitousContainerIsDocumentScopePublic 让备份包在「文件」App 中可见。
+	-->
+	<key>NSUbiquitousContainers</key>
+	<dict>
+		<key>iCloud.net.hwyz.fivo.flowers</key>
+		<dict>
+			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
+			<true/>
+			<key>NSUbiquitousContainerName</key>
+			<string>FIVO 的花花备份</string>
+			<key>NSUbiquitousContainerSupportedFolderLevels</key>
+			<string>Any</string>
+		</dict>
+	</dict>
+</dict>
+</plist>

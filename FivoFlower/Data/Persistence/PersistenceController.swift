@@ -30,10 +30,15 @@ enum FivoSchema {
 
 enum PersistenceController {
     static func makeContainer(inMemory: Bool = false) throws -> ModelContainer {
+        // 必须显式声明 cloudKitDatabase: .none。
+        // 该参数默认是 .automatic，一旦工程声明了 iCloud 容器 entitlement
+        //（本项目为 iCloud 云盘备份所需），SwiftData 会尝试启用 CloudKit，
+        // 而 CloudKit 不支持 `@Attribute(.unique)`，导致 ModelContainer 创建失败。
         let configuration = ModelConfiguration(
             "FivoFlower",
             schema: FivoSchema.schema,
-            isStoredInMemoryOnly: inMemory
+            isStoredInMemoryOnly: inMemory,
+            cloudKitDatabase: .none
         )
         return try ModelContainer(for: FivoSchema.schema, configurations: [configuration])
     }

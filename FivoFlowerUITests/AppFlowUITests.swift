@@ -227,4 +227,21 @@ final class AppFlowUITests: XCTestCase {
         app.buttons["ledger.save"].tap()
         XCTAssertTrue(app.staticTexts["测试支出"].waitForExistence(timeout: 10))
     }
+
+    func testCloudBackupFromSettingsCreatesPackage() {
+        let app = launch(["-seedMockPlants"])
+        XCTAssertTrue(app.buttons["garden.settings"].waitForExistence(timeout: 20))
+        app.buttons["garden.settings"].tap()
+
+        let backupRow = app.staticTexts["备份与恢复"].firstMatch
+        XCTAssertTrue(backupRow.waitForExistence(timeout: 10))
+        backupRow.tap()
+
+        let cloudButton = app.buttons["立即备份到 iCloud"]
+        XCTAssertTrue(cloudButton.waitForExistence(timeout: 10))
+        cloudButton.tap()
+
+        XCTAssertTrue(app.staticTexts["云端备份"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH 'fivoflower-'")).firstMatch.exists)
+    }
 }

@@ -598,7 +598,7 @@ struct PrivacyPolicyView: View {
             VStack(alignment: .leading, spacing: FivoSpacing.md) {
                 section(
                     title: "本地优先",
-                    text: "FIVO 的花花不需要账号。植物、照片、日志、工具和账目默认仅保存在本机。首版不启用 iCloud 同步，不接入第三方行为分析 SDK。"
+                    text: "FIVO 的花花不需要账号。植物、照片、日志、工具和账目默认仅保存在本机，不接入第三方行为分析 SDK。iCloud 云盘备份为可选功能，需你主动开启。"
                 )
                 section(
                     title: "照片与相机",
@@ -610,11 +610,11 @@ struct PrivacyPolicyView: View {
                 )
                 section(
                     title: "网络与第三方服务",
-                    text: "本 App 不发起任何网络请求，不接入第三方行为分析 SDK，不上传植物、照片、日志或账目数据。"
+                    text: "除你主动启用的 iCloud 云盘备份外，本 App 不发起任何网络请求，不接入第三方行为分析 SDK，不上传植物、照片、日志或账目数据。"
                 )
                 section(
                     title: "备份",
-                    text: "备份包含业务数据、照片和版本信息，不包含系统通知标识。备份文件由你自行保管。"
+                    text: "备份包含业务数据、照片和版本信息，不包含系统通知标识。本地备份文件由你自行保管；启用 iCloud 云盘备份后，备份包只写入你本人的 iCloud，可在「文件」App 中查看与删除。"
                 )
                 Text("如需删除全部本地数据，可在设置中执行“清空全部数据”。")
                     .font(FivoFont.caption)

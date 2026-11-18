@@ -1,6 +1,8 @@
 # FIVO 的花花 — SPEC 设计
 
-- 文档版本：v2.0
+- 文档版本：v2.1
+
+> **变更提示（2026-11-17，补丁 13）**：新增「5.7 iCloud Drive 备份」。在现有本地备份之上增加云端包上传与恢复，复用现有 `.fivoflower` 格式与整体替换语义，`formatVersion` 不变；**不做**实时数据库同步、跨备份合并与字段级冲突解决。
 
 > **变更提示（2026-11-17，补丁 12）**：AI 小花灵（植物识别、养护问答）、AI 订单解析增强、AI 服务配置与 Keychain 凭据管理已从 App 中移除；右上角「提醒中心」此前已在补丁 10 移除。本文档中相关章节仅作为历史设计记录保留，不再代表当前实现。当前版本不发起任何网络请求，订单导入仅使用设备端 OCR 与本地解析，未授权的通知由「养护日历」Tab 兜底。
 
@@ -22,6 +24,7 @@
 | AI | 可替换 Provider + `async/await` | 业务层不依赖具体厂商 SDK |
 | 通知 | UserNotifications | 本地通知与应用内周期待办 |
 | 导出 | JSON/ZIP 备份、CSV、系统分享面板 | 备份带 schema 版本，CSV 使用 UTF-8 |
+| 云备份 | iCloud Documents 容器 + `NSFileCoordinator` | 备份包写入用户本人 iCloud 云盘，无自有服务端与第三方 SDK |
 | 凭据 | Keychain | API Key 不进入 SwiftData、日志和备份 |
 
 首版采用单一 Xcode App Target，按模块目录组织，不提前拆分过多 Swift Package。业务逻辑使用协议隔离，为后续 iCloud 同步和测试替身预留边界。
@@ -213,6 +216,7 @@ RootTabView
 分组：提醒、养护类型、生长状态、AI 服务、数据管理、隐私与关于。
 
 - 备份展示文件内容、创建时间和版本。
+- 数据管理分组内提供「iCloud 云盘备份」卡片：立即备份、上次成功时间、云端包列表（设备名/时间/摘要）与从云端恢复入口；状态机与降级文案见 5.7。
 - 恢复先解析到临时目录并完成全量校验，再显示摘要；替换前自动生成当前数据安全备份。
 - API Key 使用安全输入框，保存到 Keychain；设置页只显示掩码。
 - 清空数据与恢复均不可仅靠滑动或单次点击执行。
@@ -296,6 +300,10 @@ RootTabView
 - Repository 不暴露 SwiftData 特有查询给 AI、备份和 View。
 - Schema、备份格式分别版本化，迁移必须可测试。
 
+补丁 13 的云端备份走备份包路线（5.7），不使用 CloudKit：不引入 `@Attribute(.unique)` 与 CloudKit 的兼容性改造，不涉及多设备实时一致性与字段级冲突合并。
+
+**约束**：工程声明 iCloud 容器 entitlement 后，`ModelConfiguration` 的 `cloudKitDatabase` 默认值 `.automatic` 会让 SwiftData 尝试启用 CloudKit，而 CloudKit 不支持 `@Attribute(.unique)`，`ModelContainer` 创建会失败（表现为启动即崩溃）。因此 `PersistenceController.makeContainer` 必须显式传 `cloudKitDatabase: .none`。
+
 ## 5. 关键服务设计
 
 ### 5.1 领域计算
@@ -368,6 +376,51 @@ Media/              # 原图、缩略图、订单附件
 ```
 
 恢复流程：临时解压 → 大小/路径安全校验 → manifest 与 DTO 全量解析 → 媒体引用完整性校验 → 展示摘要 → 当前数据安全备份 → 替换 → 重建缩略图及通知。API Key、设备特定通知 ID 不导出。
+
+iCloud 云盘中的备份包与本地包同构，恢复时走完全相同的校验与替换流程（见 5.7）。
+
+### 5.7 iCloud Drive 备份
+
+定位：把同一份 `.fivoflower` 包落到用户自己的 iCloud 云盘，实现「可回滚历史版本 + 多设备搬数据」。**不做**实时数据库同步、跨备份合并与字段级冲突解决。
+
+| 项 | 本版实现 | 明确不做 |
+|---|---|---|
+| 上传 | 手动「立即备份到 iCloud」+ 退到后台且距上次成功 >24h 自动一次 | 每次写操作即上传 |
+| 版本 | `fivoflower-<设备名>-<yyyyMMdd-HHmm>.fivoflower`；保留最近 7 份 + 每周最早 1 份 × 4 | 单文件覆盖、增量包 |
+| 恢复 | 列出云端包（设备名/时间/摘要）→ 校验 → 安全备份 → 二次确认 → 整体替换 | 跨包智能合并、字段级合并 |
+
+#### 容器与可见性
+
+- capability：iCloud Documents + `com.apple.developer.ubiquity-container-identifiers` = `iCloud.net.hwyz.fivo.flowers`。
+- Info.plist `NSUbiquitousContainers` 声明 `NSUbiquitousContainerName`「FIVO 的花花备份」与 `NSUbiquitousContainerIsDocumentScopePublic = YES`，使包在「文件」App 直接可见。
+- 容器内**只放** `.fivoflower` 包，不得放入 SwiftData `.sqlite` 等活动数据库文件，避免多设备并发写坏库。
+
+#### 写入与读取
+
+- 写入：先在容器外的临时目录完成 ZIP 组装（复用 `FileBackupService.createBackup()` 产物），再用 `NSFileCoordinator` 移入容器，避免半写文件被 iCloud 同步出去。
+- 读取：列出后逐项判断 `ubiquitousItemDownloadingStatus`；非 `.current` 时调 `startDownloadingUbiquitousItem` 并展示「正在从 iCloud 下载」，下载完成后再经协调读解析。
+- 清理：只删除本设备命名前缀的包，其他设备包一律不参与清理。
+
+#### 状态与错误
+
+状态机：`idle → backingUp → done` / `listing → downloading → restoring → done`，任一环节失败进入 `failed(reason)`。
+
+| 场景 | 处理 |
+|---|---|
+| 未登录 iCloud / iCloud Drive 关闭 | 入口置灰并显示原因与跳转「设置」，本地备份与分享导出照常可用 |
+| 空间不足（`NSFileWriteOutOfSpaceError`） | 提示清理云端旧包或改存本地，不静默丢弃 |
+| 离线 | 保留「上次成功时间」，手动重试 |
+| 包版本不兼容 | 复用现有解析的版本拒绝，绝不触碰现有数据 |
+| 同一分钟重复触发 | 生成前按「时间戳 + 设备名」判重 |
+
+#### 代码结构
+
+- `Domain/Protocols/CloudBackupServicing.swift`：`CloudBackupServicing`（`uploadBackup` / `listBackups` / `prepareForRestore` / `deleteBackup` / `shouldAutoBackup`）、`CloudBackupItem`、`CloudBackupAvailability`、`CloudBackupError`，以及容器边界 `CloudContainerProviding`。
+- `Services/CloudBackupService.swift`：组合现有 `BackupServicing` 复用 ZIP 组装与 parse/apply，自身只负责命名、协调写入、清理、下载与状态，不重写第二套备份逻辑。
+- `UbiquitousCloudContainer` 访问真实 iCloud 容器；`LocalCloudContainer` 是本地目录假容器（UI 测试与调试用），自动化测试不依赖真实 iCloud。
+- `lastBackupAt`、`autoBackupEnabled` 存 `UserDefaults`；iCloud 状态与设备名不写入备份包。
+- 工程配置：`Config/Info.plist` 提供 `NSUbiquitousContainers`，`Config/FivoFlower.entitlements` 提供 iCloud Documents 容器声明，与工程内 `GENERATE_INFOPLIST_FILE` 的 `INFOPLIST_KEY_*` 合并生成最终 Info.plist。
+- 隐私：只写入用户本人 iCloud，无自有服务端；首次上传前在设置页展示说明。
 
 ## 6. Tactile Soft UI 设计系统
 
