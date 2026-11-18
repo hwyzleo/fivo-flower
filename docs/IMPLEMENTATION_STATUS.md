@@ -160,3 +160,56 @@
 - 测试：新增 `FivoFlowerTests/CloudBackupTests.swift` 14 项（命名与上传、同分钟覆盖、列表过滤、保留策略、清理不越界、未登录/关闭云盘降级、下载中与文件缺失、云端恢复 round-trip、删除、24h 自动备份、设备名净化）；新增 UI 测试 `testCloudBackupFromSettingsCreatesPackage`。全量 81 个单元/集成测试与 14 个 UI 测试通过（1 项为既有 `testPhotoGridShowsSquareThumbnails` 回归）。
 - 修复：声明 iCloud 容器 entitlement 后，`ModelConfiguration` 的 `cloudKitDatabase` 默认 `.automatic` 会让 SwiftData 启用 CloudKit，与 `@Attribute(.unique)` 冲突导致启动崩溃（`无法创建数据容器：SwiftDataError 错误 1`）；已在 `PersistenceController.makeContainer` 显式传 `cloudKitDatabase: .none`，并在 SPEC 设计 4.9 记录该约束。
 - 遗留：模拟器与 `CODE_SIGNING_ALLOWED=NO` 下无法验证真实 iCloud 容器，需真机 + 同一 Apple ID 两台设备做「文件」App 可见性与跨设备互见验收。
+
+## 附：补丁 13 上线前置清单（门户 / 签名 / 审核）
+
+### 1. Apple Developer 门户（Identifiers → `net.hwyz.fivo.flowers`）
+
+| 项 | 做法 |
+|---|---|
+| iCloud 能力 | 开启。新版能力页勾 **iCloud Documents**，**不勾 CloudKit** |
+| 旧版能力页 | 只有 `Include CloudKit support (requires Xcode 6)` / `Compatible with Xcode 5` 两个单选框时：选前者；"iCloud Documents" 通过给 App ID **分配 iCloud 容器**表达（容器列表在 iCloud 区块内） |
+| iCloud Containers | `iCloud.net.hwyz.fivo.flowers` 必须存在并关联到该 App ID |
+| In-App Purchase | 灰显不可取消，属 App ID 强制项，**无需处理**，也不产生任何 entitlement |
+| 自动签名 | Xcode 会在首次构建时自动创建容器并更新 App ID，可跳过手工配置 |
+
+### 2. 签名产物校验
+
+```bash
+codesign -d --entitlements :- /path/to/FivoFlower.app | plutil -p -
+security cms -D -i /path/to/FivoFlower.app/embedded.mobileprovision | plutil -p - | grep -A6 icloud
+```
+
+期望：`com.apple.developer.icloud-services = ["CloudDocuments"]`，且 `icloud-container-identifiers` / `ubiquity-container-identifiers` 均为 `iCloud.net.hwyz.fivo.flowers`；embedded profile 必须包含 `CloudDocuments`。
+
+报 `Provisioning profile doesn't include the com.apple.developer.icloud-services entitlement` 时，说明 profile 缺少 Documents 授权：回门户把容器分配给 iCloud Documents，或让 Xcode 重新生成 profile。
+
+entitlements 只保留三个必要键（`icloud-container-identifiers`、`icloud-services`、`ubiquity-container-identifiers`）；未使用的 `ubiquity-kvstore-identifier` 已移除，避免与开发者门户配置不一致导致签名失败。
+
+### 3. 真机验收（同一 Apple ID 两台设备）
+
+1. 设置 → 备份与恢复：卡片显示自动备份开关与「立即备份到 iCloud」，而不是"未登录 iCloud"。
+2. 点击「立即备份到 iCloud」→ 出现 `fivoflower-<设备名>-<时间>.fivoflower`。
+3. 「文件」App → iCloud 云盘 →「FIVO 的花花备份」能看到同一个文件。
+4. 设备 B 打开同一页面能看到设备 A 的备份，且 A 继续备份不会覆盖 B 的文件。
+5. 设备 B 从云端恢复 → 数据与源一致；恢复前自动生成安全备份。
+6. 退出 Apple ID 或关闭 iCloud Drive → 卡片给出原因与设置入口，本地备份、CSV 与分享导出仍可用。
+
+### 4. App Store Connect
+
+- **App 隐私问卷**：仍可声明「不收集数据」。依据：备份包只写入用户本人的 iCloud，开发者与自有服务器均无法访问，且该功能默认关闭。
+- **审核备注建议原文**（可直接粘贴）：
+
+```text
+App 不含任何第三方 SDK，也不接入自有服务器。
+1.1 版本新增可选的「iCloud 云盘备份」：仅在用户主动开启后，把本地备份包写入用户本人的 iCloud 云盘
+（系统「文件」App 可见），开发者无法访问其内容；功能默认关闭，未开启时数据不离开设备。
+iCloud 不可用（未登录 / 关闭云盘 / 空间不足）时功能优雅降级，本地备份与 CSV 导出不受影响。
+```
+
+- 数据流、触发方式、保留策略等详细说明见线上隐私政策 6.4 节：<https://fivoflowers.hwyz.net/>
+
+### 5. 已知约束
+
+- 声明 iCloud 容器 entitlement 后，SwiftData 的 `ModelConfiguration` 必须显式 `cloudKitDatabase: .none`；否则会按 `.automatic` 启用 CloudKit，与 `@Attribute(.unique)` 冲突，启动即崩溃（见 SPEC 设计 4.9）。
+- iCloud 容器内只放 `.fivoflower` 包，禁止放入 SwiftData `.sqlite` 等活数据库文件。
